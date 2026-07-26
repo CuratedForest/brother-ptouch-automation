@@ -31,3 +31,4 @@ USER labelprinter
 WORKDIR /home/labelprinter
 EXPOSE 8765
 ENTRYPOINT ["lp", "serve", "--host", "0.0.0.0", "--port", "8765"]
+
