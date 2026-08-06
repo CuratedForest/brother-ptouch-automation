@@ -183,13 +183,21 @@ curl -X POST http://127.0.0.1:8765/render \
   -d '{"template":"utility/qr","tape_mm":12,"fields":{"data":"https://example.com","caption":"site"}}' \
   --output qr.png
 
+# Render as base64 JSON instead — for callers that can't handle binary bodies
+# (e.g. Home Assistant rest_command with response_variable)
+curl -X POST http://127.0.0.1:8765/render \
+  -H 'Authorization: Bearer s3cret' \
+  -H 'Content-Type: application/json' \
+  -d '{"template":"utility/qr","tape_mm":12,"format":"base64","fields":{"data":"https://example.com","caption":"site"}}'
+# → {"png_b64":"iVBORw0K...","bytes":1234,"tape_mm":12,"template":"utility/qr"}
+
 # Print — dry-run returns the raster bytes; set send:true to drive the transport
 curl -X POST http://127.0.0.1:8765/print \
   -H 'Content-Type: application/json' \
   -d '{"template":"kitchen/spice","tape_mm":12,"fields":{"name":"Paprika"},"send":true}'
 ```
 
-Endpoints: `GET /health`, `GET /templates`, `POST /render`, `POST /print`.
+Endpoints: `GET /health`, `GET /templates`, `POST /render` (binary PNG by default; JSON with a base64 PNG when `"format": "base64"`), `POST /print`.
 
 `POST /print` with `"send": true` resolves the printer host the same way the CLI does — `LABEL_PRINTER_HOST` env var first, then the value persisted by `lp printer set <ip>`. Before sending, the service queries the printer over SNMP and returns `409` if the loaded tape width doesn't match `tape_mm` (if SNMP is disabled on the printer, the check is skipped and the response carries a `warning` field). Transport failures return `502`; a missing printer host returns `503`.
 

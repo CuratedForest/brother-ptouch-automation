@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "skills": {
+    "API Catalog": {
+      "source": "tonylofgren/aurora-smart-home",
+      "sourceType": "github",
+      "skillPath": "api-catalog/SKILL.md",
+      "computedHash": "935d39f938d53d89d14f9daca6fb008dc866264e394b72240fbfdae3435d638d"
+    },
+    "ESPHome": {
+      "source": "tonylofgren/aurora-smart-home",
+      "sourceType": "github",
+      "skillPath": "esphome/SKILL.md",
+      "computedHash": "65b8f9903a476d80332213c34d9276189520916d9b5713fce22a7e11df3dc4ef"
+    },
+    "HA Dashboard Design": {
+      "source": "tonylofgren/aurora-smart-home",
+      "sourceType": "github",
+      "skillPath": "ha-dashboard-design/SKILL.md",
+      "computedHash": "8d38bc1336b515b2e1f8e5bf730f9fd0f7fd31439792ddba90c07a8351ba05fc"
+    },
+    "HA Integration Dev": {
+      "source": "tonylofgren/aurora-smart-home",
+      "sourceType": "github",
+      "skillPath": "ha-integration-dev/SKILL.md",
+      "computedHash": "d36d5e992b8158f598fa44fa8d9ae984e44447592119c634b7c3ded37d3c0c73"
+    },
+    "Home Assistant YAML": {
+      "source": "tonylofgren/aurora-smart-home",
+      "sourceType": "github",
+      "skillPath": "home-assistant/SKILL.md",
+      "computedHash": "8ee7a078e8fef9f0361bc6aef99420fd0f9d5d7e8ecb3cd805ad4ec181f4a5d3"
+    },
+    "Node-RED": {
+      "source": "tonylofgren/aurora-smart-home",
+      "sourceType": "github",
+      "skillPath": "node-red/SKILL.md",
+      "computedHash": "a4bd8f0a153413cba6b0feef30b8866edee2dae207c9a273ba31cb2d326bf4f1"
+    },
+    "aurora": {
+      "source": "tonylofgren/aurora-smart-home",
+      "sourceType": "github",
+      "skillPath": "aurora/SKILL.md",
+      "computedHash": "abfb27c6b9f1695a476702bb964c1bfa3d07d28d0e211f8599809e36430b9a71"
+    }
+  }
+}
