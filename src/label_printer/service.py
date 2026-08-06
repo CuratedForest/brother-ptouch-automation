@@ -1,18 +1,21 @@
 """HTTP service for remote printing.
 
-`/render` returns a PNG, `/print` returns the raster command bytes by default
-(dry-run) or drives the configured network transport when ``send=true``.
-The printer host is resolved the same way the CLI resolves it: the
-``LABEL_PRINTER_HOST`` environment variable, then the value persisted by
-``lp printer set <ip>``.
+`/render` returns a PNG (or a JSON body with a base64-encoded PNG when the
+request sets ``format="base64"`` — useful for Home Assistant `rest_command`,
+which can only capture text/JSON responses). `/print` returns the raster
+command bytes by default (dry-run) or drives the configured network transport
+when ``send=true``. The printer host is resolved the same way the CLI resolves
+it: the ``LABEL_PRINTER_HOST`` environment variable, then the value persisted
+by ``lp printer set <ip>``.
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 try:
     from fastapi import FastAPI, Header, HTTPException
@@ -57,6 +60,8 @@ class RenderRequest(BaseModel):
     # Optional post-render extras composed onto the right edge of any label.
     link: str | None = None
     image: str | None = None
+    # Response format: binary PNG (default) or JSON with a base64-encoded PNG.
+    format: Literal["png", "base64"] = "png"
 
 
 def _render_body_with_extras(template, fields: dict, tape: TapeWidth,
@@ -141,7 +146,18 @@ def render(req: RenderRequest, authorization: str | None = Header(default=None))
     image = _render_body_with_extras(template, req.fields, tape, req.link, req.image)
     buf = io.BytesIO()
     image.save(buf, format="PNG")
-    return Response(buf.getvalue(), media_type="image/png")
+    png = buf.getvalue()
+    if req.format == "base64":
+        return Response(
+            json.dumps({
+                "png_b64": base64.b64encode(png).decode("ascii"),
+                "bytes": len(png),
+                "tape_mm": int(tape),
+                "template": template.meta.qualified,
+            }),
+            media_type="application/json",
+        )
+    return Response(png, media_type="image/png")
 
 
 @app.post("/print")

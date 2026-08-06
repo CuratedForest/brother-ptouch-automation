@@ -43,6 +43,35 @@ def test_render_returns_png(client):
     assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+def test_render_base64_returns_json(client):
+    import base64
+
+    r = client.post("/render", json={
+        "template": "kitchen/pantry_jar",
+        "tape_mm": 12,
+        "format": "base64",
+        "fields": {"name": "FLOUR", "purchased": "2026-04-19"},
+    })
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["template"] == "kitchen/pantry_jar"
+    assert body["tape_mm"] == 12
+    png = base64.b64decode(body["png_b64"])
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(png) == body["bytes"]
+
+
+def test_render_invalid_format_422(client):
+    r = client.post("/render", json={
+        "template": "kitchen/spice",
+        "tape_mm": 12,
+        "format": "gif",
+        "fields": {"name": "Paprika"},
+    })
+    assert r.status_code == 422
+
+
 def test_print_dryrun_returns_raster(client):
     r = client.post("/print", json={
         "template": "kitchen/spice",
