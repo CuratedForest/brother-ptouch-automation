@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 try:
     from fastapi import FastAPI, Header, HTTPException
-    from fastapi.responses import Response
+    from fastapi.responses import FileResponse, Response
     from pydantic import BaseModel
 except ImportError as e:  # pragma: no cover
     raise ImportError(
@@ -29,6 +29,8 @@ except ImportError as e:  # pragma: no cover
 from label_printer import encode_job
 from label_printer import state as state_mod
 from label_printer.engine.compose import compose_extras, strip_template_handled
+from label_printer.engine.icons import IconNotFoundError
+from label_printer.engine.icons import registry as _icon_registry
 from label_printer.status import (
     StatusQueryError,
     TapeMismatchError,
@@ -36,6 +38,7 @@ from label_printer.status import (
 )
 from label_printer.tape import TapeWidth
 from label_printer.templates import default_registry
+from label_printer.transport.base import StatusUnavailable
 from label_printer.transport.network import NetworkTransport
 
 app = FastAPI(title="label-printer", version="0.1.0")
@@ -133,6 +136,62 @@ def templates(authorization: str | None = Header(default=None)) -> list[dict[str
         }
         for t in _REGISTRY
     ]
+
+
+@app.get("/status")
+def printer_status(authorization: str | None = Header(default=None)) -> Response:
+    """Report the physically loaded tape width and any printer error state.
+
+    Uses the same SNMP status path as the /print pre-check. Returns
+    ``ok: false`` with a warning when the printer can't report status (e.g.
+    SNMP disabled) so callers can fall back gracefully instead of failing.
+    ``tape_mm`` is the real-world width — the printer reports 3.5mm tape as
+    the protocol sentinel 4, which we map back here.
+    """
+    _require_token(authorization)
+    host = _resolve_printer_host()
+    transport = NetworkTransport(host)
+    try:
+        status = transport.query_status()
+    except StatusUnavailable as e:
+        return Response(
+            json.dumps({"ok": False, "host": host, "warning": str(e)}),
+            media_type="application/json",
+        )
+    except Exception as e:
+        raise HTTPException(502, f"could not query printer status: {e}") from e
+    return Response(
+        json.dumps({
+            "ok": True,
+            "host": host,
+            "has_media": status.has_media,
+            "tape_mm": 3.5 if status.media_width_mm == 4 else status.media_width_mm,
+            "errors": status.describe_errors(),
+        }),
+        media_type="application/json",
+    )
+
+
+@app.get("/icons/{name}.svg")
+def icon_svg(name: str, authorization: str | None = Header(default=None)) -> Response:
+    """Serve a bundled icon SVG by name (e.g. ``/icons/wifi.svg``).
+
+    Raw file serve — no rasterization, so this works without the optional
+    cairosvg dependency. Browsers render the SVG directly; the label engine
+    rasterizes its own copy at print time.
+    """
+    _require_token(authorization)
+    if "/" in name or "\\" in name or name.startswith("."):
+        raise HTTPException(400, "invalid icon name")
+    try:
+        path = _icon_registry().find(name)
+    except IconNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    return FileResponse(
+        path,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.post("/render")

@@ -34,6 +34,8 @@ try:
     _CAIROSVG_AVAILABLE = True
 except ImportError:  # pragma: no cover — exercised in test via monkeypatch
     _CAIROSVG_AVAILABLE = False
+except OSError:  # cairosvg installed but system cairo libs missing (slim images)
+    _CAIROSVG_AVAILABLE = False
 
 # Bundled icons ship inside the package (src/label_printer/icons) so they
 # resolve identically from a source checkout, an editable install, and an

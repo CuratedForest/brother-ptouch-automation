@@ -243,3 +243,91 @@ def test_auth_when_token_set(client, monkeypatch):
 def test_missing_template_404(client):
     r = client.post("/render", json={"template": "nope/nope", "tape_mm": 12, "fields": {}})
     assert r.status_code == 404
+
+
+def test_status_happy_path(client, monkeypatch):
+    class FakeTransport:
+        def __init__(self, host):
+            self.host = host
+        def query_status(self):
+            return parse_status(build_mock_status(media_width_mm=12))
+
+    monkeypatch.setenv("LABEL_PRINTER_HOST", "192.0.2.1")
+    monkeypatch.setattr("label_printer.service.NetworkTransport", FakeTransport)
+
+    r = client.get("/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["tape_mm"] == 12
+    assert body["has_media"] is True
+    assert body["errors"] == []
+
+
+def test_status_maps_3_5mm_sentinel(client, monkeypatch):
+    class FakeTransport:
+        def __init__(self, host):
+            self.host = host
+        def query_status(self):
+            return parse_status(build_mock_status(media_width_mm=4))
+
+    monkeypatch.setenv("LABEL_PRINTER_HOST", "192.0.2.1")
+    monkeypatch.setattr("label_printer.service.NetworkTransport", FakeTransport)
+
+    assert client.get("/status").json()["tape_mm"] == 3.5
+
+
+def test_status_snmp_unavailable_returns_warning(client, monkeypatch):
+    class FakeTransport:
+        def __init__(self, host):
+            self.host = host
+        def query_status(self):
+            raise StatusUnavailable("SNMP disabled")
+
+    monkeypatch.setenv("LABEL_PRINTER_HOST", "192.0.2.1")
+    monkeypatch.setattr("label_printer.service.NetworkTransport", FakeTransport)
+
+    body = client.get("/status").json()
+    assert body["ok"] is False
+    assert "warning" in body
+
+
+def test_status_without_host_returns_503(client, monkeypatch):
+    monkeypatch.delenv("LABEL_PRINTER_HOST", raising=False)
+    monkeypatch.setattr(
+        "label_printer.service.state_mod.resolve_printer_host",
+        lambda: None,
+    )
+    assert client.get("/status").status_code == 503
+
+
+def test_status_reports_printer_errors(client, monkeypatch):
+    from label_printer.constants import ErrorInformation2
+
+    class FakeTransport:
+        def __init__(self, host):
+            self.host = host
+        def query_status(self):
+            return parse_status(
+                build_mock_status(error_info_2=ErrorInformation2.COVER_OPEN)
+            )
+
+    monkeypatch.setenv("LABEL_PRINTER_HOST", "192.0.2.1")
+    monkeypatch.setattr("label_printer.service.NetworkTransport", FakeTransport)
+
+    assert "cover open" in client.get("/status").json()["errors"]
+
+
+def test_icon_served(client):
+    r = client.get("/icons/wifi.svg")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/svg+xml"
+    assert b"<svg" in r.content
+
+
+def test_icon_unknown_404(client):
+    assert client.get("/icons/definitely-not-an-icon.svg").status_code == 404
+
+
+def test_icon_traversal_rejected(client):
+    assert client.get("/icons/..svg").status_code == 400
