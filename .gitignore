@@ -16,3 +16,4 @@ build/
 !tests/golden/**/*.png
 !docs/**/*.png
 !assets/**/*.png
+.agents/skills/
