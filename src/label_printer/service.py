@@ -26,8 +26,14 @@ except ImportError as e:  # pragma: no cover
         "Install service extras: pip install -e '.[service]'"
     ) from e
 
-from label_printer import encode_job
+from label_printer import RasterOptions, encode_batch, encode_job
 from label_printer import state as state_mod
+from label_printer.engine.batch import (
+    BatchEntry,
+    BatchSpecError,
+    build_batch_images,
+    stack_preview,
+)
 from label_printer.engine.compose import compose_extras, strip_template_handled
 from label_printer.engine.icons import IconNotFoundError
 from label_printer.engine.icons import registry as _icon_registry
@@ -250,6 +256,125 @@ def print_(req: PrintRequest, authorization: str | None = Header(default=None)) 
         "sent": True,
         "host": host,
         "bytes": len(data),
+    }
+    if warning:
+        body["warning"] = warning
+    return Response(
+        json.dumps(body),
+        media_type="application/json",
+        headers={"X-Dry-Run": "false", "X-Bytes": str(len(data))},
+    )
+
+
+# --- Batch endpoints ---------------------------------------------------------
+
+
+class BatchLabel(BaseModel):
+    fields: dict[str, Any] = {}
+    template: str | None = None  # overrides the request-level template
+    link: str | None = None
+    image: str | None = None
+    copies: int = 1
+
+
+class BatchRequest(BaseModel):
+    """Same-template batch: one template, N field-set variations.
+
+    Mirrors the CLI's spec-v2 object form. Per-label ``template`` overrides
+    allow mixed templates as long as the tape width stays uniform.
+    """
+
+    template: str
+    tape_mm: int | None = None
+    labels: list[BatchLabel]
+    link: str | None = None
+    image: str | None = None
+    half_cut: bool = True
+    gap_dots: int = 0
+    cut_every: int | None = None
+    format: Literal["png", "base64"] = "png"  # /render/batch only
+
+
+class BatchPrintRequest(BatchRequest):
+    # Dry-run by default — opt in explicitly to drive the hardware transport.
+    send: bool = False
+
+
+def _build_batch(req: BatchRequest):
+    """Validate the request and render all labels. Returns (images, tape)."""
+    if not req.labels:
+        raise HTTPException(400, "batch must contain at least one label")
+    entries = [
+        BatchEntry(
+            template=label.template or req.template,
+            fields=label.fields,
+            tape_mm=req.tape_mm,
+            link=label.link or req.link,
+            image=label.image or req.image,
+            copies=label.copies,
+        )
+        for label in req.labels
+    ]
+    try:
+        return build_batch_images(entries, _REGISTRY)
+    except BatchSpecError as e:
+        msg = str(e)
+        if "No such template" in msg:
+            raise HTTPException(404, msg) from e
+        raise HTTPException(400, msg) from e
+
+
+@app.post("/render/batch")
+def render_batch(req: BatchRequest, authorization: str | None = Header(default=None)) -> Response:
+    """Render a whole batch as a single vertically stacked strip preview PNG."""
+    _require_token(authorization)
+    images, tape = _build_batch(req)
+    buf = io.BytesIO()
+    stack_preview(images).save(buf, format="PNG")
+    png = buf.getvalue()
+    if req.format == "base64":
+        return Response(
+            json.dumps({
+                "png_b64": base64.b64encode(png).decode("ascii"),
+                "bytes": len(png),
+                "labels": len(images),
+                "tape_mm": int(tape),
+            }),
+            media_type="application/json",
+        )
+    return Response(png, media_type="image/png")
+
+
+@app.post("/batch")
+def print_batch(req: BatchPrintRequest, authorization: str | None = Header(default=None)) -> Response:
+    """Encode a chained multi-label job. Dry-run unless ``send=true``."""
+    _require_token(authorization)
+    images, tape = _build_batch(req)
+    options = RasterOptions(
+        half_cut=req.half_cut, gap_dots=req.gap_dots, cut_every=req.cut_every,
+    )
+    data = encode_batch(images, tape, options)
+
+    if not req.send:
+        return Response(
+            data,
+            media_type="application/octet-stream",
+            headers={"X-Dry-Run": "true", "X-Bytes": str(len(data))},
+        )
+
+    host = _resolve_printer_host()
+    transport = NetworkTransport(host)
+    warning = _verify_tape(transport, tape)
+    try:
+        transport.send(data)
+    except OSError as e:
+        raise HTTPException(502, f"could not reach printer at {host}: {e}") from e
+
+    body: dict[str, Any] = {
+        "sent": True,
+        "host": host,
+        "bytes": len(data),
+        "labels": len(images),
     }
     if warning:
         body["warning"] = warning

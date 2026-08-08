@@ -43,6 +43,13 @@ class RasterOptions:
     ``half_cut`` is supported by the PT-P750W (and PT-E550W). The PT-P710BT
     accepts the bit without error but silently ignores it on hardware that
     lacks the physical mechanism. Leave enabled — harmless if unsupported.
+
+    ``gap_dots`` inserts blank raster lines between chained labels (batch
+    only) — extra physical spacing on the strip. ``cut_every`` full-cuts
+    after every N labels within one batch (by splitting the job into
+    chained sub-jobs); None means one continuous strip with a single final
+    cut. Both default to the historical behavior, so existing output is
+    byte-identical.
     """
 
     auto_cut: bool = True
@@ -50,6 +57,8 @@ class RasterOptions:
     chaining: bool = False
     half_cut: bool = True
     feed_dots: int = DEFAULT_FEED_DOTS
+    gap_dots: int = 0
+    cut_every: int | None = None
 
     def mode_flags(self) -> int:
         flags = 0
@@ -204,10 +213,26 @@ def encode_batch(
     Single-label batches degrade to a normal single-job encoding via
     :func:`encode_job` so byte-for-byte tests against single-job output
     keep working.
+
+    ``options.gap_dots`` pads non-final pages with blank raster lines
+    (physical spacing between labels on the strip). ``options.cut_every``
+    splits the batch into chained sub-jobs of N labels so the printer
+    full-cuts between groups.
     """
     if not images:
         raise ValueError("encode_batch requires at least one image")
     options = options or RasterOptions()
+
+    # cut_every splits the batch into chained sub-jobs of N labels each.
+    # Each sub-job ends with its own 0x1A feed-and-cut, giving a full cut
+    # between groups while keeping half-cuts inside each group.
+    if options.cut_every and len(images) > options.cut_every:
+        sub_options = replace(options, cut_every=None)
+        chunks = [
+            images[i : i + options.cut_every]
+            for i in range(0, len(images), options.cut_every)
+        ]
+        return b"".join(encode_batch(chunk, tape, sub_options) for chunk in chunks)
 
     if len(images) == 1:
         return encode_job(images[0], tape, options)
@@ -241,6 +266,11 @@ def encode_batch(
             # Re-emit ESC i K with the last-page variant before the final page.
             out += CMD_ADVANCED_MODE_PREFIX + kick_options.advanced_flags().to_bytes(1, "little")
         raster = image_to_raster_bytes(image, tape)
+        # gap_dots: blank raster lines appended to non-final pages. Done at
+        # the raster level (before ESC i z) so the declared line count in
+        # print-information includes the gap.
+        if options.gap_dots and i != last:
+            raster += b"\x00" * LINE_LENGTH_BYTES * options.gap_dots
         # n9 = 0 for the first/only page, 1 for middle pages, 2 for the last.
         n9 = 2 if i == last else (0 if i == 0 else 1)
         out += _print_information(len(raster), tape, starting_page=n9)

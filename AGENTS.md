@@ -27,13 +27,14 @@ Automation flow for generating labels on a Brother PT-P750W (primary target; PT-
 
 ## Commands
 ```bash
-# Planned — not yet implemented:
-# uv sync                    - Install deps into local venv
-# lp render <template> ...   - Render a label to PNG without printing
-# lp print <template> ...    - Render + send to printer
-# lp scan                    - Discover USB / BT printers
-# lp tape <width>            - Declare current tape width (persisted)
-# pytest                     - Run test suite
+uv sync                              # Install deps into local venv (or: python3.11 -m venv .venv && pip install -e '.[barcode,service,icons]')
+lp list / lp show <template>         # Discover templates and field schemas
+lp render <template> -f k=v ...      # Render a label to PNG without printing
+lp print <template> -f k=v ...       # Render + encode (dry-run default; --send prints, --copies N chains)
+lp batch <spec.json|file.csv>        # Chained multi-label job (--csv --template T, --preview-out strip.png, --gap-dots, --cut-every)
+lp scan                              # Discover printers on the network
+lp tape <width>                      # Declare current tape width (persisted)
+pytest                               # Run test suite
 ```
 
 ## Conventions

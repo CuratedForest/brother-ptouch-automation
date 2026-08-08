@@ -116,6 +116,21 @@ stream first, not the persistent driver config.
 A 1-image batch degrades to `encode_job()` byte-for-byte to keep single-label
 test invariants stable.
 
+## Batch options: `gap_dots` and `cut_every`
+
+Two `RasterOptions` knobs modify the canonical sequence above; both default
+to off, so the default byte stream is unchanged.
+
+- **`gap_dots`** pads every non-final page with that many blank raster lines,
+  added to the raster *before* the per-page `ESC i z` is emitted so the
+  declared line count (n4..n7) includes the gap. Result: physical spacing
+  between labels on the strip. No control codes change.
+- **`cut_every = N`** splits the batch into chained sub-jobs of N labels
+  (encoded recursively, concatenated). Each sub-job has its own session
+  prologue and terminating `0x1A`, so the printer full-cuts between groups
+  while half-cuts still separate labels inside a group. Use it when one long
+  strip would be unwieldy (e.g. `--cut-every 5` for a 30-label run).
+
 ## Spec PDF locations
 
 The Brother Raster Command Reference for PT-E550W / PT-P750W / PT-P710BT

@@ -12,7 +12,16 @@ from PIL import Image
 from label_printer import RasterOptions, TapeWidth, encode_batch, encode_job
 from label_printer.cli import main
 from label_printer.constants import CMD_PRINT_AND_FEED
+from label_printer.engine.batch import (
+    BatchEntry,
+    BatchSpecError,
+    build_batch_images,
+    entries_from_csv,
+    parse_spec,
+    stack_preview,
+)
 from label_printer.tape import geometry_for
+from label_printer.templates import default_registry
 
 
 def _test_image(tape: TapeWidth, length: int = 40) -> Image.Image:
@@ -186,3 +195,301 @@ def test_cli_batch_send_requires_configured_host(tmp_path: Path, monkeypatch):
     result = CliRunner().invoke(main, ["batch", str(spec_path), "--send"])
     assert result.exit_code != 0
     assert "no printer host configured" in result.output
+
+
+# --- Encoder: gap_dots and cut_every ------------------------------------------
+
+def _raster_line_counts(data: bytes) -> list[int]:
+    """Extract the declared raster-line count (n4..n7) from each ESC i z."""
+    counts = []
+    pos = 0
+    while True:
+        idx = data.find(b"\x1b\x69\x7a", pos)
+        if idx < 0:
+            break
+        counts.append(int.from_bytes(data[idx + 7 : idx + 11], "little"))
+        pos = idx + 13
+    return counts
+
+
+def test_gap_dots_extends_non_final_pages():
+    """gap_dots adds blank raster lines to every page except the last, and
+    the per-page ESC i z line count includes the gap."""
+    tape = TapeWidth.MM_12
+    img = _test_image(tape, length=10)
+    plain = encode_batch([img] * 3, tape)
+    gapped = encode_batch([img] * 3, tape, RasterOptions(gap_dots=7))
+    assert _raster_line_counts(plain) == [10, 10, 10]
+    assert _raster_line_counts(gapped) == [17, 17, 10]
+    # 14 extra blank lines total, each collapsing to a 0x5A Z-shortcut.
+    assert gapped.count(b"\x5a") - plain.count(b"\x5a") == 14
+
+
+def test_gap_dots_default_is_byte_identical():
+    tape = TapeWidth.MM_12
+    imgs = [_test_image(tape)] * 2
+    assert encode_batch(imgs, tape) == encode_batch(
+        imgs, tape, RasterOptions(gap_dots=0)
+    )
+
+
+def test_cut_every_splits_into_sub_jobs():
+    """cut_every=2 over 5 labels → three sub-jobs (2+2+1), each with its own
+    session prologue and terminating 0x1A."""
+    tape = TapeWidth.MM_12
+    data = encode_batch(
+        [_test_image(tape)] * 5, tape, RasterOptions(cut_every=2)
+    )
+    assert data.count(b"\x1b\x40") == 3, "each sub-job re-initializes"
+    assert data.count(CMD_PRINT_AND_FEED) == 3
+    assert data.count(b"\x1b\x69\x7a") == 5, "five pages total"
+
+
+def test_cut_every_larger_than_batch_is_single_job():
+    tape = TapeWidth.MM_12
+    imgs = [_test_image(tape)] * 3
+    assert encode_batch(imgs, tape, RasterOptions(cut_every=10)) == \
+        encode_batch(imgs, tape)
+
+
+def test_cut_every_none_is_byte_identical():
+    tape = TapeWidth.MM_12
+    imgs = [_test_image(tape)] * 2
+    assert encode_batch(imgs, tape) == encode_batch(
+        imgs, tape, RasterOptions(cut_every=None)
+    )
+
+
+# --- Spec parsing (v1 array + v2 object) ---------------------------------------
+
+def test_parse_spec_v1_array():
+    raw = [
+        {"template": "kitchen/spice", "tape_mm": 12, "fields": {"name": "a"}},
+        {"template": "kitchen/spice", "fields": {"name": "b"}, "copies": 2},
+    ]
+    entries = parse_spec(raw)
+    assert [e.template for e in entries] == ["kitchen/spice"] * 2
+    assert entries[0].tape_mm == 12
+    assert entries[1].tape_mm is None
+    assert entries[1].copies == 2
+
+
+def test_parse_spec_v2_object_inherits_defaults():
+    raw = {
+        "template": "kitchen/spice",
+        "tape_mm": 12,
+        "link": "vault:kitchen",
+        "labels": [
+            {"fields": {"name": "Paprika"}},
+            {"fields": {"name": "Cumin"}, "copies": 3, "link": "vault:cumin"},
+        ],
+    }
+    entries = parse_spec(raw)
+    assert all(e.template == "kitchen/spice" for e in entries)
+    assert all(e.tape_mm == 12 for e in entries)
+    assert entries[0].link == "vault:kitchen"
+    assert entries[1].link == "vault:cumin"
+    assert entries[1].copies == 3
+
+
+def test_parse_spec_v2_requires_labels():
+    with pytest.raises(BatchSpecError, match="labels"):
+        parse_spec({"template": "kitchen/spice"})
+
+
+def test_parse_spec_rejects_garbage():
+    with pytest.raises(BatchSpecError):
+        parse_spec("not a spec")
+    with pytest.raises(BatchSpecError):
+        parse_spec([])
+    with pytest.raises(BatchSpecError, match="template"):
+        parse_spec([{"fields": {"name": "x"}}])
+    with pytest.raises(BatchSpecError, match="copies"):
+        parse_spec([{"template": "kitchen/spice", "copies": 0}])
+
+
+# --- CSV input ------------------------------------------------------------------
+
+def test_entries_from_csv_default_column_mapping(tmp_path: Path):
+    csv_path = tmp_path / "spices.csv"
+    csv_path.write_text("name\nPaprika\nCumin\n")
+    entries = entries_from_csv("kitchen/spice", csv_path)
+    assert [e.fields for e in entries] == [{"name": "Paprika"}, {"name": "Cumin"}]
+    assert all(e.template == "kitchen/spice" for e in entries)
+
+
+def test_entries_from_csv_column_rename_and_empty_skip(tmp_path: Path):
+    csv_path = tmp_path / "spices.csv"
+    csv_path.write_text("spice,origin\nPaprika,Spain\nCumin,\n")
+    entries = entries_from_csv(
+        "kitchen/spice", csv_path, {"spice": "name"}, tape_mm=12,
+    )
+    assert entries[0].fields == {"name": "Paprika", "origin": "Spain"}
+    assert entries[1].fields == {"name": "Cumin"}  # empty column dropped
+    assert all(e.tape_mm == 12 for e in entries)
+
+
+def test_entries_from_csv_rejects_empty(tmp_path: Path):
+    csv_path = tmp_path / "empty.csv"
+    csv_path.write_text("name\n")
+    with pytest.raises(BatchSpecError, match="no data rows"):
+        entries_from_csv("kitchen/spice", csv_path)
+
+
+# --- build_batch_images ---------------------------------------------------------
+
+def test_build_batch_images_expands_copies_and_extras():
+    reg = default_registry()
+    entries = [
+        BatchEntry(template="kitchen/spice", fields={"name": "A"}, copies=2),
+        BatchEntry(template="kitchen/spice", fields={"name": "B"},
+                   link="vault:b"),
+    ]
+    images, tape = build_batch_images(entries, reg)
+    assert tape == TapeWidth.MM_12
+    assert len(images) == 3
+    assert images[0].tobytes() == images[1].tobytes(), "copies are identical"
+    # The link extra grows the label (QR appended on the right edge).
+    plain, _ = build_batch_images(
+        [BatchEntry(template="kitchen/spice", fields={"name": "B"})], reg,
+    )
+    assert images[2].width > plain[0].width
+
+
+def test_build_batch_images_rejects_mixed_tape():
+    reg = default_registry()
+    entries = [
+        BatchEntry(template="kitchen/spice", fields={"name": "a"}, tape_mm=12),
+        BatchEntry(template="kitchen/spice", fields={"name": "b"}, tape_mm=24),
+    ]
+    with pytest.raises(BatchSpecError, match="tape width"):
+        build_batch_images(entries, reg)
+
+
+def test_build_batch_images_unknown_template_names_entry():
+    reg = default_registry()
+    entries = [BatchEntry(template="nope/nope", fields={})]
+    with pytest.raises(BatchSpecError, match="entry 0.*No such template"):
+        build_batch_images(entries, reg)
+
+
+# --- stack_preview ---------------------------------------------------------------
+
+def test_stack_preview_stacks_vertically_with_separators():
+    imgs = [
+        Image.new("RGB", (30, 10), "white"),
+        Image.new("RGB", (20, 10), "white"),
+        Image.new("RGB", (25, 10), "white"),
+    ]
+    preview = stack_preview(imgs)
+    # Width = widest label; height = sum + 1px separator between labels.
+    assert preview.size == (30, 32)
+    # Separator rows are black across the full width.
+    for y in (10, 21):
+        assert all(preview.getpixel((x, y)) == (0, 0, 0) for x in range(30))
+
+
+def test_stack_preview_single_label_has_no_separator():
+    preview = stack_preview([Image.new("RGB", (12, 8), "white")])
+    assert preview.size == (12, 8)
+
+
+# --- CLI: spec v2, CSV, copies, preview ------------------------------------------
+
+def test_cli_batch_spec_v2_with_copies(tmp_path: Path):
+    spec = {
+        "template": "kitchen/spice",
+        "labels": [
+            {"fields": {"name": "Paprika"}},
+            {"fields": {"name": "Cumin"}, "copies": 3},
+        ],
+    }
+    spec_path = tmp_path / "rack.json"
+    spec_path.write_text(json.dumps(spec))
+    out = tmp_path / "out.bin"
+    result = CliRunner().invoke(
+        main, ["batch", str(spec_path), "--bin-out", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "batched 4 label" in result.output
+    assert out.read_bytes().count(b"\x1b\x69\x7a") == 4
+
+
+def test_cli_batch_csv_mode(tmp_path: Path):
+    csv_path = tmp_path / "spices.csv"
+    csv_path.write_text("name\nPaprika\nCumin\nOregano\n")
+    out = tmp_path / "out.bin"
+    result = CliRunner().invoke(
+        main, ["batch", str(csv_path), "--csv", "--template", "kitchen/spice",
+               "--bin-out", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "batched 3 label" in result.output
+    assert out.read_bytes().count(b"\x1b\x69\x7a") == 3
+
+
+def test_cli_batch_csv_requires_template(tmp_path: Path):
+    csv_path = tmp_path / "spices.csv"
+    csv_path.write_text("name\nPaprika\n")
+    result = CliRunner().invoke(main, ["batch", str(csv_path), "--csv"])
+    assert result.exit_code != 0
+    assert "--template" in result.output
+
+
+def test_cli_batch_preview_out_stacks_vertically(tmp_path: Path):
+    spec = {
+        "template": "kitchen/spice",
+        "labels": [{"fields": {"name": n}} for n in ("A", "B", "C")],
+    }
+    spec_path = tmp_path / "rack.json"
+    spec_path.write_text(json.dumps(spec))
+    preview = tmp_path / "strip.png"
+    result = CliRunner().invoke(
+        main, ["batch", str(spec_path), "--preview-out", str(preview),
+               "--bin-out", str(tmp_path / "out.bin")]
+    )
+    assert result.exit_code == 0, result.output
+    img = Image.open(preview)
+    # Vertical stacking: height = 3 × label height + 2 separator rows,
+    # and the label height matches the 12mm tape print area (70 pins).
+    label_h = geometry_for(TapeWidth.MM_12).print_pins
+    assert img.height == 3 * label_h + 2
+
+
+def test_cli_batch_gap_and_cut_every_flags(tmp_path: Path):
+    spec = [{"template": "kitchen/spice", "fields": {"name": f"n{i}"}}
+            for i in range(5)]
+    spec_path = tmp_path / "rack.json"
+    spec_path.write_text(json.dumps(spec))
+    out = tmp_path / "out.bin"
+    result = CliRunner().invoke(
+        main, ["batch", str(spec_path), "--gap-dots", "5", "--cut-every", "2",
+               "--bin-out", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    data = out.read_bytes()
+    assert data.count(CMD_PRINT_AND_FEED) == 3  # 2+2+1 sub-jobs
+
+
+def test_cli_print_copies_chains():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            main, ["print", "kitchen/spice", "-f", "name=Paprika",
+                   "--copies", "3", "--bin-out", "copies.bin"]
+        )
+        assert result.exit_code == 0, result.output
+        data = Path("copies.bin").read_bytes()
+        assert data.count(b"\x1b\x69\x7a") == 3
+        assert data.endswith(CMD_PRINT_AND_FEED)
+
+
+def test_cli_print_single_copy_matches_encode_job():
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            main, ["print", "kitchen/spice", "-f", "name=Paprika",
+                   "--bin-out", "one.bin"]
+        )
+        assert result.exit_code == 0, result.output
+        assert Path("one.bin").read_bytes().count(b"\x1b\x69\x7a") == 1
