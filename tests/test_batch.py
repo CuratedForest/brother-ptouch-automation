@@ -493,3 +493,81 @@ def test_cli_print_single_copy_matches_encode_job():
         )
         assert result.exit_code == 0, result.output
         assert Path("one.bin").read_bytes().count(b"\x1b\x69\x7a") == 1
+
+
+# --- Batch extras: icon / image_b64 ------------------------------------------
+
+
+def _tiny_png_b64() -> str:
+    import base64
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "black").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_parse_spec_per_label_icon_and_image_b64():
+    spec = {
+        "template": "kitchen/spice",
+        "tape_mm": 12,
+        "labels": [
+            {"fields": {"name": "Paprika"}, "icon": "lucide:wheat"},
+            {"fields": {"name": "Cumin"}, "image_b64": _tiny_png_b64()},
+        ],
+    }
+    entries = parse_spec(spec)
+    assert entries[0].icon == "lucide:wheat"
+    assert entries[1].image_b64
+
+
+def test_parse_spec_rejects_image_and_image_b64_together():
+    spec = [{
+        "template": "kitchen/spice",
+        "fields": {"name": "Paprika"},
+        "image": "/tmp/x.png",
+        "image_b64": _tiny_png_b64(),
+    }]
+    with pytest.raises(BatchSpecError, match="mutually exclusive"):
+        parse_spec(spec)
+
+
+def test_build_batch_images_applies_icon_and_image_b64():
+    reg = default_registry()
+    plain, _ = build_batch_images(
+        [BatchEntry(template="kitchen/spice", fields={"name": "Paprika"},
+                    tape_mm=12)], reg,
+    )
+    with_extras, _ = build_batch_images(
+        [BatchEntry(template="kitchen/spice", fields={"name": "Paprika"},
+                    tape_mm=12, icon="lucide:wheat"),
+         BatchEntry(template="kitchen/spice", fields={"name": "Cumin"},
+                    tape_mm=12, image_b64=_tiny_png_b64())], reg,
+    )
+    assert with_extras[0].width > plain[0].width
+    assert with_extras[1].width > plain[0].width
+    assert with_extras[0].height == plain[0].height
+
+
+def test_build_batch_images_bad_image_b64_raises():
+    reg = default_registry()
+    with pytest.raises(BatchSpecError, match="base64"):
+        build_batch_images(
+            [BatchEntry(template="kitchen/spice", fields={"name": "Paprika"},
+                        tape_mm=12, image_b64="not valid base64 !!!")], reg,
+        )
+
+
+def test_cli_batch_icon_default_applies_to_all_labels(tmp_path: Path):
+    spec = {
+        "template": "kitchen/spice",
+        "tape_mm": 12,
+        "labels": [{"fields": {"name": "Paprika"}}],
+    }
+    spec_path = tmp_path / "batch.json"
+    spec_path.write_text(json.dumps(spec))
+    result = CliRunner().invoke(
+        main, ["batch", str(spec_path), "--icon", "lucide:wheat",
+               "--bin-out", str(tmp_path / "out.bin")]
+    )
+    assert result.exit_code == 0, result.output

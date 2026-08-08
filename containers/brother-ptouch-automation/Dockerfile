@@ -27,6 +27,19 @@ RUN groupadd --system --gid 65532 labelprinter \
     && mkdir -p /home/labelprinter/.config/label-printer \
     && chown -R labelprinter:labelprinter /home/labelprinter
 
+# HOME is set explicitly: Docker's USER instruction does not update $HOME,
+# and `lp icons install-*` resolves the icon home via Path.home().
+ENV HOME=/home/labelprinter
+
+# Bake in the full Material Design Icons set so `mdi:*` icon names (the
+# namespace Home Assistant uses) resolve out of the box. Runs as the
+# service user so icons land in its config home. NOTE: mounting a volume at
+# /home/labelprinter/.config/label-printer shadows these baked icons —
+# either skip the volume or re-run `lp icons install-mdi` inside it.
+# Kept as its own layer so builds without github.com access can drop it.
+USER labelprinter
+RUN lp icons install-mdi
+
 USER labelprinter
 WORKDIR /home/labelprinter
 EXPOSE 8765

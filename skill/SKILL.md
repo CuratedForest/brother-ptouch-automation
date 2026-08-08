@@ -108,7 +108,7 @@ lp render three_d_printing/tool_tag \
   --png-out /tmp/label_preview.png
 ```
 
-`--link` accepts short-forms (`vault:...`, `gh:...`), URLs, or any opaque string. `--image` takes a path to a PNG/JPEG; it is fitted to tape height and threshold-converted to monochrome. Both flags also work on `lp print`. Templates that render their own QR / image (`utility/qr`, `utility/image`, `electronics/cable_flag` — which puts them on **each** face inside the wrap geometry) silently absorb the matching flag instead of letting `compose_extras` tack a copy onto the trailing edge.
+`--link` accepts short-forms (`vault:...`, `gh:...`), URLs, or any opaque string. `--image` takes a path to a PNG/JPEG; it is fitted to tape height and threshold-converted to monochrome. `--icon` takes any icon-registry name (`wheat`, `lucide:wifi`, `mdi:fridge`) and snaps it onto the right edge of any template — `mdi:*` names match Home Assistant's icon namespace (requires the mdi pack: `lp icons install-mdi`). All three flags also work on `lp print`, and `lp batch` accepts per-label `"link"` / `"image"` / `"image_b64"` / `"icon"` keys in the spec JSON plus a batch-wide `--icon`. Templates that render their own QR / image (`utility/qr`, `utility/image`, `electronics/cable_flag` — which puts them on **each** face inside the wrap geometry) silently absorb the matching flag instead of letting `compose_extras` tack a copy onto the trailing edge; presets with an `icon_field` likewise absorb `--icon`.
 
 ## Rules
 

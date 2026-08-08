@@ -467,3 +467,130 @@ def test_render_bad_icon_override_returns_422(client):
     })
     assert r.status_code == 422
     assert r.json()["detail"]
+
+
+# --- icon / image_b64 request fields -----------------------------------------
+
+
+def _tiny_png_b64() -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "black").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _png_size(png: bytes) -> tuple[int, int]:
+    import io
+
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(png))
+    return img.size
+
+
+def test_render_with_icon_extra(client):
+    plain = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"},
+    })
+    with_icon = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"}, "icon": "lucide:wheat",
+    })
+    assert plain.status_code == with_icon.status_code == 200
+    assert _png_size(with_icon.content)[0] > _png_size(plain.content)[0]
+
+
+def test_render_with_mdi_icon(client, tmp_path, monkeypatch):
+    mdi_dir = tmp_path / "mdi"
+    mdi_dir.mkdir()
+    (mdi_dir / "fridge.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+        '<rect width="24" height="24" fill="black"/></svg>'
+    )
+    monkeypatch.setenv("LABEL_PRINTER_ICON_PATH", str(tmp_path))
+    r = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"}, "icon": "mdi:fridge",
+    })
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+
+
+def test_render_with_unknown_icon_returns_422(client):
+    r = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"}, "icon": "mdi:no-such-icon-here",
+    })
+    assert r.status_code == 422
+
+
+def test_render_with_image_b64(client):
+    plain = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"},
+    })
+    with_img = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"}, "image_b64": _tiny_png_b64(),
+    })
+    assert plain.status_code == with_img.status_code == 200
+    assert _png_size(with_img.content)[0] > _png_size(plain.content)[0]
+
+
+def test_render_image_b64_bad_base64_400(client):
+    r = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"}, "image_b64": "not valid base64 !!!",
+    })
+    assert r.status_code == 400
+    assert "base64" in r.json()["detail"]
+
+
+def test_render_image_b64_non_image_400(client):
+    import base64
+
+    payload = base64.b64encode(b"this is not an image").decode("ascii")
+    r = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"}, "image_b64": payload,
+    })
+    assert r.status_code == 400
+
+
+def test_render_image_and_image_b64_together_400(client):
+    r = client.post("/render", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "fields": {"name": "Paprika"},
+        "image": "/tmp/x.png", "image_b64": _tiny_png_b64(),
+    })
+    assert r.status_code == 400
+    assert "mutually exclusive" in r.json()["detail"]
+
+
+def test_batch_label_icon_and_image_b64(client):
+    r = client.post("/render/batch", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "labels": [
+            {"fields": {"name": "Paprika"}, "icon": "lucide:wheat"},
+            {"fields": {"name": "Cumin"}, "image_b64": _tiny_png_b64()},
+        ],
+    })
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+
+
+def test_batch_label_image_and_image_b64_together_400(client):
+    r = client.post("/render/batch", json={
+        "template": "kitchen/spice", "tape_mm": 12,
+        "labels": [
+            {"fields": {"name": "Paprika"},
+             "image": "/tmp/x.png", "image_b64": _tiny_png_b64()},
+        ],
+    })
+    assert r.status_code == 400
+    assert "mutually exclusive" in r.json()["detail"]

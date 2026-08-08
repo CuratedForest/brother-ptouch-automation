@@ -69,12 +69,16 @@ def _verify_tape_or_die(transport, tape: TapeWidth) -> None:
 
 
 def _render_with_extras(template, data: dict, tape: TapeWidth,
-                        link: str | None, image: str | None) -> Image.Image:
+                        link: str | None, image: str | None,
+                        icon: str | None = None) -> Image.Image:
     """Render the template, then compose any post-render extras onto the body."""
-    extras = {k: v for k, v in {"link": link, "image": image}.items() if v}
+    extras = {k: v for k, v in {"link": link, "image": image, "icon": icon}.items() if v}
     extras = strip_template_handled(extras, template)
     body = template.render(data, tape)
-    return compose_extras(body, extras, tape)
+    try:
+        return compose_extras(body, extras, tape)
+    except KeyError as e:  # IconNotFoundError
+        raise click.ClickException(str(e.args[0] if e.args else e)) from e
 
 
 def _tape_from_mm(mm: int) -> TapeWidth:
@@ -153,12 +157,14 @@ def show(qualified: str) -> None:
               help="QR payload appended to the right edge (short-form, URL, or opaque string).")
 @click.option("--image", "image_path", type=click.Path(exists=True, dir_okay=False), default=None,
               help="Path to a bitmap appended to the right edge (fit to tape height).")
+@click.option("--icon", "icon_name", type=str, default=None,
+              help="Icon name appended to the right edge (e.g. wifi, mdi:fridge).")
 @click.option("--png-out", type=click.Path(path_type=Path), default=None,
               help="Where to save the rendered PNG preview.")
 @click.option("--bin-out", type=click.Path(path_type=Path), default=None,
               help="Where to save the raw command stream.")
 def render_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...],
-                    link: str | None, image_path: str | None,
+                    link: str | None, image_path: str | None, icon_name: str | None,
                     png_out: Path | None, bin_out: Path | None) -> None:
     """Render a template to a PNG and/or raster command stream (no printing)."""
     reg = default_registry()
@@ -169,7 +175,7 @@ def render_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...]
 
     tape = _tape_from_mm(tape_mm) if tape_mm else template.meta.default_tape
     data = template.validate(_parse_fields(fields))
-    image = _render_with_extras(template, data, tape, link, image_path)
+    image = _render_with_extras(template, data, tape, link, image_path, icon_name)
 
     if png_out is None and bin_out is None:
         png_out = Path(f"out_{qualified.replace('/', '_')}_{int(tape)}mm.png")
@@ -194,6 +200,8 @@ def render_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...]
               help="QR payload appended to the right edge (short-form, URL, or opaque string).")
 @click.option("--image", "image_path", type=click.Path(exists=True, dir_okay=False), default=None,
               help="Path to a bitmap appended to the right edge (fit to tape height).")
+@click.option("--icon", "icon_name", type=str, default=None,
+              help="Icon name appended to the right edge (e.g. wifi, mdi:fridge).")
 @click.option(
     "--send/--dry-run",
     default=False,
@@ -216,7 +224,7 @@ def render_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...]
 @click.option("--bin-out", type=click.Path(path_type=Path), default=Path("out.bin"),
               help="Dry-run output path (ignored when --send is set).")
 def print_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...],
-                   link: str | None, image_path: str | None,
+                   link: str | None, image_path: str | None, icon_name: str | None,
                    send: bool, transport_name: str, printer_host: str | None,
                    copies: int, bin_out: Path) -> None:
     """Encode + (dry-run|send) a template-based label.
@@ -233,7 +241,7 @@ def print_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...],
 
     tape = _tape_from_mm(tape_mm) if tape_mm else template.meta.default_tape
     data = template.validate(_parse_fields(fields))
-    image = _render_with_extras(template, data, tape, link, image_path)
+    image = _render_with_extras(template, data, tape, link, image_path, icon_name)
     if copies < 1:
         raise click.BadParameter("--copies must be a positive integer")
     cmd_bytes = (
@@ -429,6 +437,9 @@ def wires() -> None:
 @click.option("--tape", "tape_mm", type=int, default=None,
               help="Tape width in mm for the whole batch (overrides per-entry "
                    "and template defaults).")
+@click.option("--icon", "icon_name", type=str, default=None,
+              help="Icon name appended to the right edge of every label that "
+                   "doesn't set its own \"icon\" (e.g. mdi:fridge).")
 @click.option(
     "--send/--dry-run",
     default=False, show_default=True,
@@ -457,6 +468,7 @@ def wires() -> None:
               show_default=True, help="Dry-run output path.")
 def batch_cmd(source: str, csv_mode: bool, csv_template: str | None,
               field_map: tuple[str, ...], tape_mm: int | None,
+              icon_name: str | None,
               send: bool, no_half_cut: bool, gap_dots: int, cut_every: int | None,
               preview_out: Path | None, transport_name: str,
               printer_host: str | None, bin_out: Path) -> None:
@@ -484,8 +496,8 @@ def batch_cmd(source: str, csv_mode: bool, csv_template: str | None,
             "link": "vault:kitchen/spices/oregano"}
          ]}
 
-    Entries may carry "link" / "image" extras (composed onto the label's
-    right edge) and "copies" (N identical labels).
+    Entries may carry "link" / "image" / "image_b64" / "icon" extras
+    (composed onto the label's right edge) and "copies" (N identical labels).
 
     CSV mode — one label per row; columns map to same-named template
     fields unless remapped with --field col=field:
@@ -531,6 +543,10 @@ def batch_cmd(source: str, csv_mode: bool, csv_template: str | None,
         if tape_mm is not None:
             from dataclasses import replace as _replace
             entries = [_replace(e, tape_mm=tape_mm) for e in entries]
+
+    if icon_name is not None:
+        from dataclasses import replace as _replace
+        entries = [_replace(e, icon=e.icon or icon_name) for e in entries]
 
     reg = default_registry()
     try:

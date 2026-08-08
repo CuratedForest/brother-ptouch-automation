@@ -54,7 +54,7 @@ That's enough for `lp list` to show it, `lp show kitchen/teabag` to report its s
 | `secondary_ratio` | no | Fraction of tape height for the subtitle (default 0.28) |
 | `max_width_mm` | no | Longest line width budget (default 120) |
 | `padding_mm` | no | Side padding (default 6) |
-| `icon_field` | no | Name of a field whose value is a Lucide icon |
+| `icon_field` | no | Name of a field whose value is an icon-registry name (`wheat`, `lucide:wifi`, `mdi:fridge`) |
 | `handles_extras` | no | List of compose-extras keys this preset handles internally (e.g. `["link"]`) |
 
 ## String templates
@@ -122,4 +122,4 @@ Each `[[presets.fields]]` entry declares one field Claude / the CLI / the servic
 
 - TOML **inline tables must fit on one line**. Use the `[[presets.fields]]` array-of-tables syntax for readable multi-line entries.
 - Omit `primary_parts` if you set `primary`, and vice versa. The loader prefers `primary_parts` when both are present.
-- Icons require the `[icons]` extra (pulls in `cairosvg`). The preset just passes the icon *name* through; rendering happens in the layout helper.
+- Icons require the `[icons]` extra (pulls in `cairosvg`). The preset just passes the icon *name* through; rendering happens in the layout helper. Any icon-registry name works — bare (`wheat`), `lucide:*`, or `mdi:*` (requires `lp icons install-mdi`). Presets with an `icon_field` automatically absorb the global `icon` extra so it never double-renders.

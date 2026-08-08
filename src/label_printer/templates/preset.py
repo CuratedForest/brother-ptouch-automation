@@ -87,7 +87,12 @@ class PresetTemplate(Template):
             fields=fields,
             default_tape=TapeWidth(int(spec.get("default_tape", 12))),
         )
-        self.handles_extras = frozenset(spec.get("handles_extras", []))
+        handled = set(spec.get("handles_extras", []))
+        if spec.get("icon_field"):
+            # The preset renders its own icon from a field — a trailing-edge
+            # `icon` extra must not double-render.
+            handled.add("icon")
+        self.handles_extras = frozenset(handled)
 
     def render(self, data: dict[str, Any], tape: TapeWidth) -> Image.Image:
         # Apply any derived fields before string substitution so {eat_by}-style

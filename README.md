@@ -43,7 +43,7 @@ Templates have validated field schemas, dry-run is the default, and the three su
 
 - **Dry-run by default.** `lp print` and `lp batch` encode + write bytes to a file but never drive the transport unless you add `--send`. The printer never moves unexpectedly.
 - **Wire-aware cable flags.** Pass `wire=ethernet` or `wire=18AWG` and the wrap section is sized to the cable's outer diameter (π·OD + adhesive overlap); 40+ keywords plus AWG 0–30 built in.
-- **Icons, opt-in.** ~50 curated Lucide icons bundled; full Lucide (~1500) or Material Design Icons (~7000) sets install with `lp icons install-lucide` / `lp icons install-mdi`.
+- **Icons, opt-in.** ~50 curated Lucide icons bundled; full Lucide (~1500) or Material Design Icons (~7000) sets install with `lp icons install-lucide` / `lp icons install-mdi`. `mdi:*` names — the namespace Home Assistant uses — resolve anywhere an icon name is accepted, and `--icon` snaps one onto *any* template.
 - **Pack plug-in system.** Ship your own templates as a separate pip package via standard entry points; broken packs are isolated and a safe-mode env var disables them wholesale. See [`docs/creating-a-pack.md`](docs/creating-a-pack.md).
 - **180+ tests**, ruff clean, CI green on every push.
 
@@ -151,6 +151,7 @@ lp icons list [--source]               # bundled Lucide icons
 
 # render (safe — no transport touched)
 lp render <template> -f k=v ...        # PNG + raster preview
+lp render <template> --icon mdi:fridge # snap an icon onto the right edge
 lp render-image <file.png>             # raster-encode an arbitrary image
 
 # print — dry-run default, --send opt-in
@@ -209,7 +210,23 @@ curl -X POST http://127.0.0.1:8765/render \
 curl -X POST http://127.0.0.1:8765/print \
   -H 'Content-Type: application/json' \
   -d '{"template":"kitchen/spice","tape_mm":12,"fields":{"name":"Paprika"},"send":true}'
+
+# Icon extra — any registry icon name (lucide:wifi, mdi:fridge, …) snaps onto
+# the right edge of any template. mdi:* matches Home Assistant's icon names.
+curl -X POST http://127.0.0.1:8765/render \
+  -H 'Content-Type: application/json' \
+  -d '{"template":"kitchen/pantry_jar","fields":{"name":"Flour","purchased":"2026-08-01"},"icon":"mdi:barrel"}' \
+  --output flour.png
+
+# image_b64 — remote equivalent of the CLI's --image: a base64-encoded
+# PNG/JPEG inlined in the request (no file needed on the service host).
+curl -X POST http://127.0.0.1:8765/render \
+  -H 'Content-Type: application/json' \
+  -d "{\"template\":\"kitchen/spice\",\"fields\":{\"name\":\"Paprika\"},\"image_b64\":\"$(base64 -w0 icon.png)\"}" \
+  --output spice.png
 ```
+
+`icon`, `image`, and `image_b64` are per-request extras (`/render`, `/print`) and per-label or batch-wide defaults (`/render/batch`, `/batch`). `image` (a path on the service host) and `image_b64` are mutually exclusive. Icon extras on a template that already renders an icon field (e.g. `kitchen/pantry_jar` with `-f icon=…`) are silently absorbed, same as `link`/`image`.
 
 Endpoints: `GET /health`, `GET /templates`, `POST /render` (binary PNG by default; JSON with a base64 PNG when `"format": "base64"`), `POST /print`, `POST /render/batch` (whole-strip preview, labels stacked vertically in print order), `POST /batch` (chained multi-label job).
 
@@ -250,7 +267,7 @@ docker run -p 8765:8765 \
   ghcr.io/<owner>/brother-ptouch-automation:latest
 ```
 
-To persist CLI state (e.g. `lp printer set`) across restarts, mount a volume at `/home/labelprinter/.config/label-printer`.
+To persist CLI state (e.g. `lp printer set`) across restarts, mount a volume at `/home/labelprinter/.config/label-printer`. The image bakes in the full Material Design Icons set (`mdi:*` names resolve out of the box — handy for Home Assistant callers); note that mounting that config volume **shadows the baked icons**, so either skip the volume, re-run `lp icons install-mdi` inside it, or point `LABEL_PRINTER_ICON_PATH` at an icon directory of your own.
 
 ### Claude Code skill
 
@@ -283,7 +300,7 @@ Claude picks the right template, proposes fields, dry-renders a PNG for you to r
 
 ## QR codes and bitmaps on any template
 
-Two global options — `--link` and `--image` — compose onto the right edge of *any* template's output, so you do not need a QR-specific template per category. `--link` takes a short-form (`vault:...`, `gh:...`), a URL, or any opaque string, and renders it as a QR sized to tape height. `--image` takes a path to a bitmap and fits it to tape height (monochrome, aspect preserved).
+Three global options — `--link`, `--image`, and `--icon` — compose onto the right edge of *any* template's output, so you do not need a QR-specific template per category. `--link` takes a short-form (`vault:...`, `gh:...`), a URL, or any opaque string, and renders it as a QR sized to tape height. `--image` takes a path to a bitmap and fits it to tape height (monochrome, aspect preserved). `--icon` takes any icon-registry name (`wifi`, `lucide:wifi`, `mdi:fridge`) and renders it square at tape height.
 
 ```bash
 # Pantry label plus a QR that Claude can later resolve to the vault note

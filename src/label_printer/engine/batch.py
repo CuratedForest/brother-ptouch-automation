@@ -23,7 +23,11 @@ from typing import Any
 
 from PIL import Image
 
-from label_printer.engine.compose import compose_extras, strip_template_handled
+from label_printer.engine.compose import (
+    compose_extras,
+    image_from_base64,
+    strip_template_handled,
+)
 from label_printer.tape import TapeWidth
 
 
@@ -44,6 +48,8 @@ class BatchEntry:
     tape_mm: int | None = None
     link: str | None = None
     image: str | None = None
+    image_b64: str | None = None
+    icon: str | None = None
     copies: int = 1
 
 
@@ -75,16 +81,18 @@ def parse_spec(raw: Any) -> list[BatchEntry]:
          "labels": [{"fields": {"name": "Paprika"}},
                     {"fields": {"name": "Cumin"}, "copies": 3}]}
 
-      Top-level ``template`` / ``tape_mm`` / ``link`` / ``image`` act as
-      defaults; each label may override ``template`` and add its own
-      ``link`` / ``image``.
+      Top-level ``template`` / ``tape_mm`` / ``link`` / ``image`` /
+      ``image_b64`` / ``icon`` act as defaults; each label may override
+      ``template`` and add its own ``link`` / ``image`` / ``image_b64`` /
+      ``icon``.
     """
     if isinstance(raw, list):
         entries = [_parse_entry(e, defaults={}, where=f"entry {i}")
                    for i, e in enumerate(raw)]
     elif isinstance(raw, dict):
         defaults = {
-            k: raw.get(k) for k in ("template", "tape_mm", "link", "image")
+            k: raw.get(k)
+            for k in ("template", "tape_mm", "link", "image", "image_b64", "icon")
         }
         labels = raw.get("labels")
         if not isinstance(labels, list) or not labels:
@@ -109,12 +117,18 @@ def _parse_entry(raw: Any, *, defaults: dict, where: str) -> BatchEntry:
     if not isinstance(copies, int) or copies < 1:
         raise BatchSpecError(f"{where}: 'copies' must be a positive integer")
     tape_mm = raw.get("tape_mm", defaults.get("tape_mm"))
+    image = raw.get("image", defaults.get("image"))
+    image_b64 = raw.get("image_b64", defaults.get("image_b64"))
+    if image and image_b64:
+        raise BatchSpecError(f"{where}: 'image' and 'image_b64' are mutually exclusive")
     return BatchEntry(
         template=str(template),
         fields=dict(raw.get("fields", {})),
         tape_mm=int(tape_mm) if tape_mm is not None else None,
         link=raw.get("link", defaults.get("link")),
-        image=raw.get("image", defaults.get("image")),
+        image=image,
+        image_b64=image_b64,
+        icon=raw.get("icon", defaults.get("icon")),
         copies=copies,
     )
 
@@ -154,8 +168,18 @@ def entries_from_csv(template: str, csv_path: Path,
 
 
 def render_entry(template, entry: BatchEntry, tape: TapeWidth) -> Image.Image:
-    """Render one entry, including any post-render extras (link / image)."""
-    extras = {k: v for k, v in {"link": entry.link, "image": entry.image}.items() if v}
+    """Render one entry, including any post-render extras (link / image / icon)."""
+    image: Any = entry.image
+    if entry.image_b64:
+        try:
+            image = image_from_base64(entry.image_b64)
+        except ValueError as e:
+            raise BatchSpecError(f"entry {entry.template!r}: {e}") from e
+    extras = {
+        k: v
+        for k, v in {"link": entry.link, "image": image, "icon": entry.icon}.items()
+        if v
+    }
     extras = strip_template_handled(extras, template)
     body = template.render(template.validate(dict(entry.fields)), tape)
     return compose_extras(body, extras, tape)

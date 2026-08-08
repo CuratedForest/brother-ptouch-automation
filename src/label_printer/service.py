@@ -34,7 +34,11 @@ from label_printer.engine.batch import (
     build_batch_images,
     stack_preview,
 )
-from label_printer.engine.compose import compose_extras, strip_template_handled
+from label_printer.engine.compose import (
+    compose_extras,
+    image_from_base64,
+    strip_template_handled,
+)
 from label_printer.engine.icons import IconNotFoundError
 from label_printer.engine.icons import registry as _icon_registry
 from label_printer.status import (
@@ -82,14 +86,36 @@ class RenderRequest(BaseModel):
     fields: dict[str, Any] = {}
     # Optional post-render extras composed onto the right edge of any label.
     link: str | None = None
+    # ``image`` is a path on the SERVICE host's filesystem; remote callers
+    # (e.g. Home Assistant rest_command) should use ``image_b64`` instead.
     image: str | None = None
+    image_b64: str | None = None
+    # Icon name resolved by the icon registry (``wifi``, ``mdi:fridge``, …).
+    icon: str | None = None
     # Response format: binary PNG (default) or JSON with a base64-encoded PNG.
     format: Literal["png", "base64"] = "png"
 
 
+def _resolve_image(image: str | None, image_b64: str | None):
+    """Pick the image extra value from a path or a base64 payload.
+
+    Mutually exclusive; base64 decodes to a PIL image here so compose never
+    has to care where the bytes came from.
+    """
+    if image and image_b64:
+        raise HTTPException(400, "'image' and 'image_b64' are mutually exclusive")
+    if image_b64:
+        try:
+            return image_from_base64(image_b64)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    return image
+
+
 def _render_body_with_extras(template, fields: dict, tape: TapeWidth,
-                             link: str | None, image: str | None):
-    extras = {k: v for k, v in {"link": link, "image": image}.items() if v}
+                             link: str | None, image: str | None,
+                             icon: str | None = None):
+    extras = {k: v for k, v in {"link": link, "image": image, "icon": icon}.items() if v}
     extras = strip_template_handled(extras, template)
     body = template.render(template.validate(fields), tape)
     return compose_extras(body, extras, tape)
@@ -222,7 +248,10 @@ def render(req: RenderRequest, authorization: str | None = Header(default=None))
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
     tape = TapeWidth(4 if req.tape_mm in (3, 4) else req.tape_mm)
-    image = _render_body_with_extras(template, req.fields, tape, req.link, req.image)
+    image = _render_body_with_extras(
+        template, req.fields, tape, req.link,
+        _resolve_image(req.image, req.image_b64), req.icon,
+    )
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     png = buf.getvalue()
@@ -248,7 +277,10 @@ def print_(req: PrintRequest, authorization: str | None = Header(default=None)) 
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
     tape = TapeWidth(4 if req.tape_mm in (3, 4) else req.tape_mm)
-    image = _render_body_with_extras(template, req.fields, tape, req.link, req.image)
+    image = _render_body_with_extras(
+        template, req.fields, tape, req.link,
+        _resolve_image(req.image, req.image_b64), req.icon,
+    )
     data = encode_job(image, tape)
 
     if not req.send:
@@ -288,6 +320,8 @@ class BatchLabel(BaseModel):
     template: str | None = None  # overrides the request-level template
     link: str | None = None
     image: str | None = None
+    image_b64: str | None = None
+    icon: str | None = None
     copies: int = 1
 
 
@@ -303,6 +337,8 @@ class BatchRequest(BaseModel):
     labels: list[BatchLabel]
     link: str | None = None
     image: str | None = None
+    image_b64: str | None = None
+    icon: str | None = None
     half_cut: bool = True
     gap_dots: int = 0
     cut_every: int | None = None
@@ -318,6 +354,11 @@ def _build_batch(req: BatchRequest):
     """Validate the request and render all labels. Returns (images, tape)."""
     if not req.labels:
         raise HTTPException(400, "batch must contain at least one label")
+    for i, label in enumerate(req.labels):
+        if (label.image or req.image) and (label.image_b64 or req.image_b64):
+            raise HTTPException(
+                400, f"labels[{i}]: 'image' and 'image_b64' are mutually exclusive"
+            )
     entries = [
         BatchEntry(
             template=label.template or req.template,
@@ -325,6 +366,8 @@ def _build_batch(req: BatchRequest):
             tape_mm=req.tape_mm,
             link=label.link or req.link,
             image=label.image or req.image,
+            image_b64=label.image_b64 or req.image_b64,
+            icon=label.icon or req.icon,
             copies=label.copies,
         )
         for label in req.labels
