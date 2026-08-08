@@ -19,7 +19,7 @@ from label_printer.tape import TapeWidth, geometry_for
 from label_printer.templates.base import Template, TemplateField, TemplateMeta
 
 _KNOWN_ICONS = {
-    "warning": "alert-triangle",
+    "warning": "triangle",
     "flammable": "flame",
     "biohazard": "biohazard",
     "electrical": "zap",
@@ -27,8 +27,12 @@ _KNOWN_ICONS = {
     "sharp": "scissors",
     "hot": "flame",
     "cold": "snowflake",
-    "radiation": "alert-triangle",  # fallback if radiation icon missing
+    "radiation": "triangle",  # no radiation icon in the bundled set
 }
+
+# Bundled Lucide set has no alert-triangle/triangle-alert — "triangle" is the
+# fallback that always resolves (see icons/lucide/triangle.svg).
+_DEFAULT_ICON = "triangle"
 
 
 class HazardTemplate(Template):
@@ -59,7 +63,7 @@ class HazardTemplate(Template):
         hazard = str(data["hazard"]).lower()
         text = str(data["text"])
         code = data.get("code")
-        icon_name = data.get("icon") or _KNOWN_ICONS.get(hazard, "alert-triangle")
+        icon_name = data.get("icon") or _KNOWN_ICONS.get(hazard, _DEFAULT_ICON)
 
         from label_printer.engine.icons import IconEngineUnavailable, load_icon
 

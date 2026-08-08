@@ -18,8 +18,8 @@ import os
 from typing import Any, Literal
 
 try:
-    from fastapi import FastAPI, Header, HTTPException
-    from fastapi.responses import FileResponse, Response
+    from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi.responses import FileResponse, JSONResponse, Response
     from pydantic import BaseModel
 except ImportError as e:  # pragma: no cover
     raise ImportError(
@@ -50,6 +50,20 @@ from label_printer.transport.network import NetworkTransport
 app = FastAPI(title="label-printer", version="0.1.0")
 _REGISTRY = default_registry()
 _TOKEN_ENV = "LABEL_PRINTER_TOKEN"
+
+
+@app.exception_handler(ValueError)
+async def _value_error_to_422(_: Request, exc: ValueError) -> JSONResponse:
+    """Template validation/rendering problems are client input errors (missing
+    required fields, icon engine unavailable, …), not server faults — answer
+    422 with the reason instead of a bare 500."""
+    return JSONResponse({"detail": str(exc)}, status_code=422)
+
+
+@app.exception_handler(KeyError)
+async def _key_error_to_422(_: Request, exc: KeyError) -> JSONResponse:
+    """Lookup failures (e.g. IconNotFoundError) are client errors too."""
+    return JSONResponse({"detail": str(exc.args[0] if exc.args else exc)}, status_code=422)
 
 
 def _require_token(authorization: str | None) -> None:

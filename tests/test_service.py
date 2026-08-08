@@ -442,3 +442,28 @@ def test_render_batch_base64(client):
     assert body["tape_mm"] == 12
     import base64
     assert base64.b64decode(body["png_b64"])[:8] == b"\x89PNG\r\n\x1a\n"
+def test_render_missing_field_returns_422_with_reason(client):
+    """Template validate() ValueError surfaces as 422 with the field name."""
+    r = client.post("/render", json={
+        "template": "kitchen/spice",
+        "tape_mm": 12,
+        "fields": {},
+    })
+    assert r.status_code == 422
+    assert "missing required field" in r.json()["detail"]
+    assert "name" in r.json()["detail"]
+
+
+def test_render_bad_icon_override_returns_422(client):
+    """An unrenderable icon override is a client error, not a bare 500.
+
+    With a working cairosvg this hits IconNotFoundError (KeyError); without
+    one it hits IconEngineUnavailable (ValueError) — both must be 422.
+    """
+    r = client.post("/render", json={
+        "template": "workshop/hazard",
+        "tape_mm": 12,
+        "fields": {"hazard": "flammable", "text": "ACETONE", "icon": "no-such-icon"},
+    })
+    assert r.status_code == 422
+    assert r.json()["detail"]

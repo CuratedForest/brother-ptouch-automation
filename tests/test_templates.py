@@ -117,3 +117,13 @@ def test_cable_flag_handles_extras_internally(registry):
     """compose_extras must skip 'link' and 'image' for cable_flag — it draws them per-face."""
     template = registry.get("electronics/cable_flag")
     assert template.handles_extras == frozenset({"link", "image"})
+
+
+def test_hazard_icon_map_resolves():
+    """Every hazard keyword icon + the default must exist in the bundled set."""
+    from label_printer.engine.icons import registry
+    from label_printer.templates.workshop.hazard import _DEFAULT_ICON, _KNOWN_ICONS
+
+    reg = registry()
+    for name in [*_KNOWN_ICONS.values(), _DEFAULT_ICON]:
+        assert reg.find(name).is_file(), f"hazard icon {name!r} not in bundled set"
