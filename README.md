@@ -113,13 +113,23 @@ python3.11 -m venv .venv
 
 # Batch-print a whole spice rack as one chained job (half-cut between each)
 cat > rack.json <<EOF
-[
-  {"template": "kitchen/spice", "tape_mm": 12, "fields": {"name": "Paprika"}},
-  {"template": "kitchen/spice", "tape_mm": 12, "fields": {"name": "Cumin"}},
-  {"template": "kitchen/spice", "tape_mm": 12, "fields": {"name": "Oregano"}}
-]
+{
+  "template": "kitchen/spice", "tape_mm": 12,
+  "labels": [
+    {"fields": {"name": "Paprika"}},
+    {"fields": {"name": "Cumin"}, "copies": 2},
+    {"fields": {"name": "Oregano"}, "link": "vault:kitchen/spices/oregano"}
+  ]
+}
 EOF
-.venv/bin/lp batch rack.json
+.venv/bin/lp batch rack.json --preview-out strip.png   # eyeball the whole strip first
+
+# …or straight from a CSV (one label per row, columns map to template fields)
+printf 'name\nPaprika\nCumin\n' > spices.csv
+.venv/bin/lp batch spices.csv --csv --template kitchen/spice
+
+# N identical copies of one label
+.venv/bin/lp print kitchen/spice -f name=Paprika --copies 4
 
 # When hardware lands: verify the right tape is loaded, then actually print
 .venv/bin/lp status           # parses the printer's status packet
@@ -146,7 +156,11 @@ lp render-image <file.png>             # raster-encode an arbitrary image
 # print — dry-run default, --send opt-in
 lp print <template> -f k=v ...         # single label
 lp print <template> -f k=v ... --send  # really print
+lp print <template> -f k=v --copies 4  # N identical labels, chained
 lp batch <spec.json>                   # chained multi-label job (half-cut)
+lp batch <spec.json> --preview-out strip.png  # whole-strip preview (stacked vertically)
+lp batch <file.csv> --csv --template <t>      # one label per CSV row
+lp batch <spec.json> --gap-dots 8 --cut-every 5  # spacing + periodic full cuts
 lp batch <spec.json> --send            # ditto, send for real
 
 # hardware (Wi-Fi)
@@ -197,7 +211,20 @@ curl -X POST http://127.0.0.1:8765/print \
   -d '{"template":"kitchen/spice","tape_mm":12,"fields":{"name":"Paprika"},"send":true}'
 ```
 
-Endpoints: `GET /health`, `GET /templates`, `POST /render` (binary PNG by default; JSON with a base64 PNG when `"format": "base64"`), `POST /print`.
+Endpoints: `GET /health`, `GET /templates`, `POST /render` (binary PNG by default; JSON with a base64 PNG when `"format": "base64"`), `POST /print`, `POST /render/batch` (whole-strip preview, labels stacked vertically in print order), `POST /batch` (chained multi-label job).
+
+`POST /batch` mirrors the CLI's same-template shorthand:
+
+```bash
+curl -X POST http://127.0.0.1:8765/batch \
+  -H 'Content-Type: application/json' \
+  -d '{"template":"kitchen/spice","tape_mm":12,
+       "labels":[{"fields":{"name":"Paprika"}},
+                 {"fields":{"name":"Cumin"},"copies":3}],
+       "gap_dots":8,"send":true}'
+```
+
+Per label: `fields`, optional `copies`, `link` / `image` extras, and a `template` override (mixed templates are fine as long as the tape width matches). Batch-wide: `half_cut` (default true), `gap_dots` (blank feed between labels), `cut_every` (full-cut after every N labels). Dry-run returns the chained raster bytes; `send: true` applies the same SNMP tape-match gate as `/print`.
 
 `POST /print` with `"send": true` resolves the printer host the same way the CLI does — `LABEL_PRINTER_HOST` env var first, then the value persisted by `lp printer set <ip>`. Before sending, the service queries the printer over SNMP and returns `409` if the loaded tape width doesn't match `tape_mm` (if SNMP is disabled on the printer, the check is skipped and the response carries a `warning` field). Transport failures return `502`; a missing printer host returns `503`.
 
@@ -357,6 +384,7 @@ The encoder targets Brother's [Raster Command Reference for PT-E550W / PT-P750W 
 ### Open proposals
 
 - [Proposal 0001 — QR-code context linking](docs/proposals/0001-qr-context-linking.md) (open): let any label carry a small QR pointing at its canonical source of truth in an Obsidian vault or a GitHub repo. Resolved by Claude from a photo — no URL scheme drama, no hosted redirect, no "Obsidian not installed" dead-ends.
+- [Proposal 0002 — Same-template batches](docs/proposals/0002-same-template-batches.md) (implemented): concise batch spec for N variations of one template, CSV input, per-entry copies, vertical strip previews, gap/cut-every controls, and `/batch` + `/render/batch` service endpoints.
 
 See [`docs/implementation-plan.md`](docs/implementation-plan.md) for the full phased plan.
 

@@ -59,6 +59,37 @@ lp print kitchen/pantry_jar \
 
 **`--send` is the only way tape moves.** Without it, `lp print` is always a dry-run — it encodes + writes bytes but never drives the transport. Never pass `--send` without the user's explicit approval of the preview.
 
+### Batches — N variations of one template
+
+For "label the whole spice rack" requests, use `lp batch`. Always render the whole-strip preview first with `--preview-out` (labels stacked vertically in print order, separators = cut positions) and get approval before `--send`.
+
+```bash
+# Same-template shorthand spec
+cat > /tmp/rack.json <<EOF
+{"template": "kitchen/spice", "tape_mm": 12,
+ "labels": [
+   {"fields": {"name": "Paprika"}},
+   {"fields": {"name": "Cumin"}, "copies": 2},
+   {"fields": {"name": "Oregano"}, "link": "vault:kitchen/spices/oregano"}
+ ]}
+EOF
+lp batch /tmp/rack.json --preview-out /tmp/strip.png     # show the user
+lp batch /tmp/rack.json --send                           # only after approval
+
+# CSV input — one label per row; columns map to same-named template fields
+lp batch spices.csv --csv --template kitchen/spice --field name
+
+# N identical copies of a single label
+lp print kitchen/spice -f name=Paprika --copies 4
+
+# Useful knobs
+lp batch /tmp/rack.json --gap-dots 8        # extra blank feed between labels
+lp batch /tmp/rack.json --cut-every 5       # full-cut after every 5 labels
+lp batch /tmp/rack.json --no-half-cut       # full cut between every label
+```
+
+The HTTP service mirrors this: `POST /render/batch` returns the stacked strip PNG (or `format:"base64"`), `POST /batch` encodes the chained job (`send:true` to print).
+
 ### Adding a QR or a bitmap to any template
 
 Two global flags compose onto the right edge of *any* template's output — no need for a QR-specific template:

@@ -9,6 +9,13 @@ from PIL import Image
 
 from label_printer import RasterOptions, TapeWidth, encode_batch, encode_job
 from label_printer import state as state_mod
+from label_printer.engine.batch import (
+    BatchSpecError,
+    build_batch_images,
+    entries_from_csv,
+    parse_spec,
+    stack_preview,
+)
 from label_printer.engine.compose import compose_extras, strip_template_handled
 from label_printer.tape import geometry_for
 from label_printer.templates import default_registry
@@ -203,12 +210,15 @@ def render_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...]
 @click.option("--host", "printer_host", type=str, default=None,
               help="Printer host/IP (for --transport network). Falls back to "
                    "LABEL_PRINTER_HOST env var, then saved state.")
+@click.option("--copies", type=int, default=1, show_default=True,
+              help="Print N identical copies as one chained job (half-cut "
+                   "between labels on the PT-P750W).")
 @click.option("--bin-out", type=click.Path(path_type=Path), default=Path("out.bin"),
               help="Dry-run output path (ignored when --send is set).")
 def print_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...],
                    link: str | None, image_path: str | None,
                    send: bool, transport_name: str, printer_host: str | None,
-                   bin_out: Path) -> None:
+                   copies: int, bin_out: Path) -> None:
     """Encode + (dry-run|send) a template-based label.
 
     By default this is a dry-run: the label is rendered and encoded, the
@@ -224,7 +234,12 @@ def print_template(qualified: str, tape_mm: int | None, fields: tuple[str, ...],
     tape = _tape_from_mm(tape_mm) if tape_mm else template.meta.default_tape
     data = template.validate(_parse_fields(fields))
     image = _render_with_extras(template, data, tape, link, image_path)
-    cmd_bytes = encode_job(image, tape)
+    if copies < 1:
+        raise click.BadParameter("--copies must be a positive integer")
+    cmd_bytes = (
+        encode_job(image, tape) if copies == 1
+        else encode_batch([image] * copies, tape)
+    )
 
     if not send:
         transport = DryRunTransport(bin_out)
@@ -401,7 +416,19 @@ def wires() -> None:
 # --- Batch printing ---------------------------------------------------------
 
 @main.command(name="batch")
-@click.argument("spec_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("source", type=str)
+@click.option(
+    "--csv", "csv_mode", is_flag=True,
+    help="Treat SOURCE as a CSV file (requires --template). One label per row.",
+)
+@click.option("--template", "csv_template", type=str, default=None,
+              help="Template to use for every row in --csv mode.")
+@click.option("--field", "field_map", multiple=True,
+              help="CSV column mapping: 'name' (identity) or 'col=field'. "
+                   "Repeatable. Only used with --csv.")
+@click.option("--tape", "tape_mm", type=int, default=None,
+              help="Tape width in mm for the whole batch (overrides per-entry "
+                   "and template defaults).")
 @click.option(
     "--send/--dry-run",
     default=False, show_default=True,
@@ -411,6 +438,14 @@ def wires() -> None:
     "--no-half-cut", is_flag=True,
     help="Disable half-cut between labels (full cut between each). P750W only.",
 )
+@click.option("--gap-dots", type=int, default=0, show_default=True,
+              help="Blank feed (dots @180dpi) inserted between labels.")
+@click.option("--cut-every", type=int, default=None,
+              help="Full-cut after every N labels (splits into sub-jobs). "
+                   "Default: one continuous strip, cut at the end.")
+@click.option("--preview-out", type=click.Path(path_type=Path), default=None,
+              help="Save a whole-strip preview PNG (labels stacked vertically "
+                   "in print order).")
 @click.option(
     "--transport", "transport_name",
     type=click.Choice(["network", "usb", "bluetooth"]),
@@ -420,13 +455,18 @@ def wires() -> None:
               help="Printer host/IP (for --transport network).")
 @click.option("--bin-out", type=click.Path(path_type=Path), default=Path("batch.bin"),
               show_default=True, help="Dry-run output path.")
-def batch_cmd(spec_file: Path, send: bool, no_half_cut: bool,
-              transport_name: str, printer_host: str | None, bin_out: Path) -> None:
+def batch_cmd(source: str, csv_mode: bool, csv_template: str | None,
+              field_map: tuple[str, ...], tape_mm: int | None,
+              send: bool, no_half_cut: bool, gap_dots: int, cut_every: int | None,
+              preview_out: Path | None, transport_name: str,
+              printer_host: str | None, bin_out: Path) -> None:
     """Print multiple labels as a single chained job.
 
-    SPEC_FILE is a JSON array — each element specifies one label:
-
     \b
+    SOURCE is a batch spec (JSON) or, with --csv, a CSV file.
+
+    JSON spec — array form (mixed templates):
+
         [
           {"template": "kitchen/pantry_jar", "tape_mm": 12,
            "fields": {"name": "AP Flour", "purchased": "2026-04-19"}},
@@ -434,35 +474,78 @@ def batch_cmd(spec_file: Path, send: bool, no_half_cut: bool,
            "fields": {"name": "Smoked Paprika", "origin": "Spain"}}
         ]
 
+    JSON spec — object shorthand (same template, N variations):
+
+        {"template": "kitchen/spice", "tape_mm": 12,
+         "labels": [
+           {"fields": {"name": "Paprika"}},
+           {"fields": {"name": "Cumin"}, "copies": 3},
+           {"fields": {"name": "Oregano"},
+            "link": "vault:kitchen/spices/oregano"}
+         ]}
+
+    Entries may carry "link" / "image" extras (composed onto the label's
+    right edge) and "copies" (N identical labels).
+
+    CSV mode — one label per row; columns map to same-named template
+    fields unless remapped with --field col=field:
+
+        lp batch names.csv --csv --template kitchen/spice --field name
+
     All labels must use the same tape width (chained jobs can't switch tape
     mid-job). With half-cut enabled (default), labels come off the printer
     as a single strip separated by partial cuts — much easier to handle
     than N separate strips.
     """
     import json
-    raw = json.loads(spec_file.read_text())
-    if not isinstance(raw, list) or not raw:
-        raise click.ClickException("spec file must be a non-empty JSON array")
+
+    if cut_every is not None and cut_every < 1:
+        raise click.BadParameter("--cut-every must be a positive integer")
+    if gap_dots < 0:
+        raise click.BadParameter("--gap-dots must be >= 0")
+
+    if csv_mode:
+        if not csv_template:
+            raise click.ClickException("--csv requires --template <qualified>")
+        column_map: dict[str, str] = {}
+        for pair in field_map:
+            if "=" in pair:
+                col, target = pair.split("=", 1)
+                column_map[col.strip()] = target.strip()
+            else:
+                column_map[pair.strip()] = pair.strip()
+        try:
+            entries = entries_from_csv(
+                csv_template, Path(source), column_map, tape_mm=tape_mm,
+            )
+        except (BatchSpecError, OSError) as e:
+            raise click.ClickException(str(e)) from e
+    else:
+        source_path = Path(source)
+        if not source_path.is_file():
+            raise click.ClickException(f"spec file not found: {source}")
+        try:
+            entries = parse_spec(json.loads(source_path.read_text()))
+        except (BatchSpecError, json.JSONDecodeError) as e:
+            raise click.ClickException(f"invalid batch spec: {e}") from e
+        if tape_mm is not None:
+            from dataclasses import replace as _replace
+            entries = [_replace(e, tape_mm=tape_mm) for e in entries]
 
     reg = default_registry()
-    tapes: set[int] = set()
-    images = []
-    for i, entry in enumerate(raw):
-        try:
-            template = reg.get(entry["template"])
-        except KeyError as e:
-            raise click.ClickException(f"entry {i}: {e}") from e
-        tape_mm = int(entry.get("tape_mm", int(template.meta.default_tape)))
-        tapes.add(tape_mm)
-        data = template.validate(entry.get("fields", {}))
-        images.append(template.render(data, _tape_from_mm(tape_mm)))
+    try:
+        images, tape = build_batch_images(entries, reg)
+    except BatchSpecError as e:
+        raise click.ClickException(str(e)) from e
 
-    if len(tapes) != 1:
-        raise click.ClickException(
-            f"all batch entries must share one tape width; got {sorted(tapes)}"
-        )
-    tape = _tape_from_mm(tapes.pop())
-    options = RasterOptions(half_cut=not no_half_cut)
+    if preview_out:
+        preview_out.parent.mkdir(parents=True, exist_ok=True)
+        stack_preview(images).save(preview_out)
+        click.echo(f"preview: {preview_out}  ({len(images)} labels, stacked)")
+
+    options = RasterOptions(
+        half_cut=not no_half_cut, gap_dots=gap_dots, cut_every=cut_every,
+    )
     cmd_bytes = encode_batch(images, tape, options)
 
     click.echo(f"batched {len(images)} label(s) → {len(cmd_bytes)} bytes")

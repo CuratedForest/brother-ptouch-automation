@@ -331,3 +331,114 @@ def test_icon_unknown_404(client):
 
 def test_icon_traversal_rejected(client):
     assert client.get("/icons/..svg").status_code == 400
+
+
+# --- Batch endpoints ----------------------------------------------------------
+
+_BATCH_BODY = {
+    "template": "kitchen/spice",
+    "tape_mm": 12,
+    "labels": [
+        {"fields": {"name": "Paprika"}},
+        {"fields": {"name": "Cumin"}, "copies": 3},
+    ],
+}
+
+
+def test_batch_dry_run_returns_chained_bytes(client):
+    r = client.post("/batch", json=_BATCH_BODY)
+    assert r.status_code == 200
+    assert r.headers["x-dry-run"] == "true"
+    assert int(r.headers["x-bytes"]) == len(r.content)
+    assert r.content.endswith(b"\x1a")
+    # copies=3 expands: 4 pages in one chained job.
+    assert r.content.count(b"\x1b\x69\x7a") == 4
+
+
+def test_batch_empty_labels_400(client):
+    r = client.post("/batch", json={"template": "kitchen/spice", "labels": []})
+    assert r.status_code == 400
+
+
+def test_batch_unknown_template_404(client):
+    r = client.post("/batch", json={
+        "template": "nope/nope",
+        "labels": [{"fields": {}}],
+    })
+    assert r.status_code == 404
+
+
+def test_batch_mixed_tape_400(client):
+    """kitchen/spice defaults to 12mm, home_inventory/moving_box to 24mm —
+    a chained job can't mix them."""
+    r = client.post("/batch", json={
+        "template": "kitchen/spice",
+        "labels": [
+            {"fields": {"name": "a"}},
+            {"template": "home_inventory/moving_box",
+             "fields": {"room": "Kitchen", "contents": "pots"}},
+        ],
+    })
+    assert r.status_code == 400
+    assert "tape width" in r.json()["detail"]
+
+
+def test_batch_send_happy_path(client, monkeypatch):
+    sent: list[bytes] = []
+
+    class FakeTransport:
+        def __init__(self, host):
+            self.host = host
+        def query_status(self):
+            return parse_status(build_mock_status(media_width_mm=12))
+        def send(self, data: bytes):
+            sent.append(data)
+
+    monkeypatch.setenv("LABEL_PRINTER_HOST", "192.0.2.1")
+    monkeypatch.setattr("label_printer.service.NetworkTransport", FakeTransport)
+
+    r = client.post("/batch", json={**_BATCH_BODY, "send": True})
+    assert r.status_code == 200
+    assert r.headers["x-dry-run"] == "false"
+    body = r.json()
+    assert body["sent"] is True
+    assert body["labels"] == 4
+    assert sent and sent[0].count(b"\x1b\x69\x7a") == 4
+
+
+def test_batch_send_without_host_returns_503(client, monkeypatch):
+    monkeypatch.delenv("LABEL_PRINTER_HOST", raising=False)
+    monkeypatch.setattr(
+        "label_printer.service.state_mod.resolve_printer_host",
+        lambda: None,
+    )
+    r = client.post("/batch", json={**_BATCH_BODY, "send": True})
+    assert r.status_code == 503
+
+
+def test_render_batch_returns_stacked_png(client):
+    r = client.post("/render/batch", json=_BATCH_BODY)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    import io
+
+    from PIL import Image
+
+    from label_printer.tape import TapeWidth, geometry_for
+
+    img = Image.open(io.BytesIO(r.content))
+    label_h = geometry_for(TapeWidth.MM_12).print_pins
+    # 4 labels (copies expanded) + 3 separator rows, stacked vertically.
+    assert img.height == 4 * label_h + 3
+
+
+def test_render_batch_base64(client):
+    r = client.post("/render/batch", json={**_BATCH_BODY, "format": "base64"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["labels"] == 4
+    assert body["tape_mm"] == 12
+    import base64
+    assert base64.b64decode(body["png_b64"])[:8] == b"\x89PNG\r\n\x1a\n"
