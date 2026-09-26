@@ -17,3 +17,4 @@ build/
 !docs/**/*.png
 !assets/**/*.png
 .agents/skills/
+.agents/worktrees/

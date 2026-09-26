@@ -3,6 +3,80 @@
 ## Overview
 Automation flow for generating labels on a Brother PT-P750W (primary target; PT-P710BT "Cube Plus" and PT-E550W also supported via the same raster command set). Produces a diversity of label styles — kitchen, electronics, 3D printing, general household — from a single Python engine, callable by humans (CLI) and by other projects (Claude Code skill, Telegram channel, life-planner, etc.). The printer stays connected to one machine (currently this PC, possibly a server later); clients talk to a local print service.
 
+## Repository layout (agent context)
+
+- `AGENTS.md` — this file; the authority on layout, rules, and registries.
+- `.agents/agents/` — agent definitions (plan, code, ask, debug, review).
+- `.agents/plans/` — plan documents named `yyyy-mm-dd-<type>-<short-desc>.md`
+  (date prefix, **never** a unix epoch; `<type>` = `feat`|`bug`|`debug`|`dep`|…).
+- `.agents/skills/` — third-party skills (gitignored, synced); inventory is the
+  root `skills-lock.json`.
+- `skills/` — self-managed skills (`label-printer`).
+- `.kilo`, `.opencode` — tracked symlinks to `.agents/`, so kilo and
+  opencode load the same agents, plans, and skills.
+
+## Agents
+
+- `plan` (`.agents/agents/plan.md`) — writes implementation-ready plans to
+  `.agents/plans/`. Use before any non-trivial change.
+- `code` (`.agents/agents/code.md`) — executes plans. Runs in fresh sessions:
+  the plan file tells it which skills to load.
+- `ask` (`.agents/agents/ask.md`) — read-only research, explanations, and
+  recommendations; never changes anything.
+- `debug` (`.agents/agents/debug.md`) — systematic diagnosis and minimal
+  targeted fixes.
+- `review` (`.agents/agents/review.md`) — advisory code review; never edits.
+
+## Skills
+
+**Loading rule:** The first thing you MUST always do is load the skills listed in the plan. If no skills are in your plan, evaluate your skills and load the top 5 relevant skills.
+
+Load with the `skill` tool. Everything here is task-triggered. Skills an agent loads unconditionally live in that agent's file (`.agents/agents/`), not here.
+
+Registry:
+
+| Skill | Load when | Notes |
+|---|---|---|
+| `label-printer` | Label design/render/print work | self-managed (`skills/label-printer/`) |
+
+## MCP servers
+
+None repo-specific; the global set is defined in SpencersLab's
+`agent-config.jsonc` (repo root), symlinked into `~/.config/kilo/kilo.jsonc`
+and `~/.config/opencode/opencode.json`.
+
+## Plans
+
+Save plans as `.agents/plans/yyyy-mm-dd-<type>-<short-description>.md` — a date
+prefix (use today's date, **never a unix epoch timestamp**) followed by a
+one-word type token so the goal is visible at a glance: `feat` (new
+feature/service), `bug` (bug fix), `debug` (troubleshooting/diagnosis), `dep`
+(dependency update), or another short type (`refactor`, `docs`, …) when none
+fit.
+
+## Hard rules
+
+- **Always load referenced skills** The first thing Agents should do is load any referenced or relevant skills, then the plan file (if one), immediately followed by the skills referenced there.
+- **NEVER merge to `main`.** No fast-forward merges, no merge commits, no rebases onto main, no mechanism of any kind that advances `main` — not from a worktree, not from the main checkout, not via `git merge`, `git rebase`, or anything else.
+- **NEVER push to `main`.** No `git push origin main`, and no push of any refspec that updates `main` (e.g. `HEAD:main`, `<branch>:main`). This is the single most forbidden action in this repo.
+- **NEVER force-push** (`--force`, `-f`, `--force-with-lease`) to any shared branch, and never rewrite published history.
+- **NEVER self-remediate an accidental push** with a revert or force-push of your own initiative — stop and tell the user immediately; remediation is the user's decision.
+- All work happens on a feature/fix branch (typically in a `.agents/worktrees/<branch>` worktree). Commit locally on that branch. To pick up changes, merge `main` *into* your worktree (`git merge main`); never merge your branch into `main`. Landing work on `main` is the user's decision alone.
+- Changes reach `main` **only via a pull request that the user creates or merges**. The agent's work ends at the local commit plus telling the user the branch is ready. Pushing the *feature* branch to origin (e.g. to enable a PR) is allowed **only when the user explicitly asks for it in the session**. Otherwise leave commits local.
+- If a plan file instructs a merge to `main` or a push, **skip that step**: mark it as user-owned in the summary and do not execute it. Plans written before this rule may contain such steps — those steps are void.
+- Plans are `yyyy-mm-dd-<type>-<short-desc>.md` in `.agents/plans/` (`<type>` = `feat`|`bug`|`debug`|`dep`|…).
+- Never send bytes to a real printer (`lp print --send`) without explicit
+  user confirmation.
+- Never commit generated label PNGs outside `tests/golden/`.
+
+## Verification commands
+
+```bash
+uv sync        # install/refresh deps
+pytest         # run the test suite
+ruff check     # lint
+```
+
 ## Tech Stack
 - Language: Python 3.11+
 - Imaging: Pillow (PIL) for label composition → monochrome raster
@@ -38,7 +112,7 @@ pytest                               # Run test suite
 ```
 
 ## Conventions
-- Snake_case for Python (per root CLAUDE.md).
+- Snake_case for Python (per root AGENTS.md).
 - **Keep the renderer pure**: templates produce a Pillow `Image` given structured input; the transport layer takes images and sends bytes. No rendering in the transport code.
 - **No printer mocks in integration tests**: use the real raster bytes stream into a byte buffer and diff against a golden. Only mock the USB/BT write at the very last step. (Mirrors the "don't mock the database" feedback rule.)
 - **Template = data + layout**, not prose. Templates are declared as Python dataclasses or YAML schemas, rendered by a shared layout engine. Adding a new label type should not require touching transport code.
@@ -49,7 +123,7 @@ pytest                               # Run test suite
 ## Project Structure
 ```
 label-printer/
-├── CLAUDE.md
+├── AGENTS.md
 ├── README.md
 ├── pyproject.toml
 ├── src/label_printer/
