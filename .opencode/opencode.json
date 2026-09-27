@@ -1,0 +1,8 @@
+{
+  "plugins": [
+    "ocx",
+    "@mohak34/opencode-notifier",
+    "@plannotator/opencode@latest",
+    "plannotator/opencode@latest"
+  ]
+}

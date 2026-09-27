@@ -12,8 +12,10 @@ Automation flow for generating labels on a Brother PT-P750W (primary target; PT-
 - `.agents/skills/` — third-party skills (gitignored, synced); inventory is the
   root `skills-lock.json`.
 - `skills/` — self-managed skills (`label-printer`).
-- `.kilo`, `.opencode` — tracked symlinks to `.agents/`, so kilo and
-  opencode load the same agents, plans, and skills.
+- `.kilo` — tracked symlink to `.agents/`, so kilo loads the same agents,
+  plans, and skills.
+- `.opencode/` — real tracked dir: `agents` and `skills` symlink back into
+  `.agents/`; opencode-only content lives here (`plugin/`, `opencode.json`).
 
 ## Agents
 
